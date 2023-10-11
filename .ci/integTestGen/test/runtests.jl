@@ -4,7 +4,8 @@ using Test
 import Term.Trees: Tree
 
 # set environment variable PRINTTREE=on to visualize the project trees of the testsets
-printTree::Bool = haskey(ENV, "PRINTTREE")
+# TODO(SimeonEhrig): add type ::Bool , when minimum version is Julia 1.9
+printTree = haskey(ENV, "PRINTTREE")
 
 @testset "direct dependency to main" begin
     project_tree = Dict("MyMainProject.jl 1.0.0" => Dict("MyDep1.jl 1.0.0" => Dict()))
