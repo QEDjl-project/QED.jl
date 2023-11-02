@@ -2,8 +2,7 @@ stages:
   - unit-test
   - verify-unit-test-deps
 
-unit_tests_julia1.9:
-  image: julia:1.9
+.untit_test_template:
   stage: unit-test
   script:
     # test SetupDevEnv.jl
@@ -31,6 +30,18 @@ unit_tests_julia1.9:
   interruptible: true
   tags:
     - cpuonly
+
+unit_tests_releases:
+  extends: .untit_test_template
+  parallel:
+    matrix:
+      - JULIA_VERSION: ["1.6", "1.7", "1.8", "1.9"]
+  image: julia:$JULIA_VERSION
+
+unit_tests_nightly:
+  extends: .untit_test_template
+  image: julia:1.10-rc
+  allow_failure: true
 
 verify-unit-test-deps_julia1.9:
   image: julia:1.9
