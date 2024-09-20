@@ -11,6 +11,7 @@ The script needs to be executed the project space, which should be modified.
 """
 
 using Pkg
+using TOML
 
 # TODO(SimeonEhrig): is copied from integTestGen.jl
 """
@@ -73,6 +74,7 @@ end
 """
     set_dev_dependencies(
         dependencies::AbstractVector{Pkg.API.PackageInfo},
+        compact_names::AbstractVector{Tuple{String, String}}=Vector{Tuple{String, String}}(),
         custom_urls::AbstractDict{String,String}=Dict{String,String}(),
     )
 
@@ -80,9 +82,14 @@ Set all dependencies to the development version, if they are not already develop
 The dict custom_urls takes as key a dependency name and a URL as value. If a dependency is in
 custom_urls, it will use the URL as development version. If the dependency does not exist in
 custom_urls, it will set the URL https://github.com/QEDjl-project/<dependency_name>.jl
+
+With `compact_names` the compat entries of each dependency can be changed. The first value 
+of the tuple is the name of the compatibility entry and the second value is the new version. 
+Only changes the version of existing compat entries.
 """
 function set_dev_dependencies(
     dependencies::AbstractVector{Pkg.API.PackageInfo},
+    compact_names::AbstractVector{Tuple{String,String}}=Vector{Tuple{String,String}}(),
     custom_urls::AbstractDict{String,String}=Dict{String,String}(),
 )
     for dep in dependencies
@@ -94,10 +101,54 @@ function set_dev_dependencies(
                 Pkg.develop(; url="https://github.com/QEDjl-project/$(dep.name).jl")
             end
         end
+        for (compact_name, compact_version) in compact_names
+            set_compat_helper(compact_name, compact_version, dep.source)
+        end
     end
 end
 
+"""
+    set_compat_helper(
+        name::AbstractString, version::AbstractString, project_path::AbstractString
+    )
+
+Change the version of an existing compat enties of a dependency.
+
+# Args
+
+- `name::AbstractString`: name of the compat entry
+- `version::AbstractString`: new version of the compat entry
+- `project_path::AbstractString`: project path of the dependency
+
+"""
+function set_compat_helper(
+    name::AbstractString, version::AbstractString, project_path::AbstractString
+)
+    project_toml_path = joinpath(project_path, "Project.toml")
+
+    f = open(project_toml_path, "r")
+    project_toml = TOML.parse(f)
+    close(f)
+
+    if haskey(project_toml, "compat") && haskey(project_toml["compat"], name)
+        project_toml["compat"][name] = version
+    end
+
+    f = open(project_toml_path, "w")
+
+    TOML.print(f, project_toml)
+    return close(f)
+end
+
 if abspath(PROGRAM_FILE) == @__FILE__
+    new_compat = Vector{Tuple{String,String}}()
+    if haskey(ENV, "CI_DEPENDENCY_NAME") && haskey(ENV, "CI_DEPENDENCY_VERSION")
+        push!(
+            new_compat,
+            (string(ENV["CI_DEPENDENCY_NAME"]), string(ENV["CI_DEPENDENCY_VERSION"])),
+        )
+    end
+
     deps = get_filtered_dependencies(r"^(QED*|QuantumElectrodynamics*)")
-    set_dev_dependencies(deps)
+    set_dev_dependencies(deps, [("QEDcore", "0.1.0")])
 end
