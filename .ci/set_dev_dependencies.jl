@@ -134,6 +134,8 @@ function set_compat_helper(
         project_toml["compat"][name] = version
     end
 
+    # for GitHub Actions to fix permission denied error
+    chmod(project_toml_path, 0o777)
     f = open(project_toml_path, "w")
 
     TOML.print(f, project_toml)
