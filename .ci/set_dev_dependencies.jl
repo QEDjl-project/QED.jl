@@ -12,6 +12,7 @@ The script needs to be executed the project space, which should be modified.
 
 using Pkg
 using TOML
+using Logging
 
 # TODO(SimeonEhrig): is copied from integTestGen.jl
 """
@@ -96,6 +97,7 @@ function set_dev_dependencies(
         # if tree_hash is nothing, it is already a dev version
         if !isnothing(dep.tree_hash)
             if haskey(custom_urls, dep.name)
+                @warn "use custom url for package $(dep.name): $(custom_urls[dep.name])"
                 Pkg.develop(; url=custom_urls[dep.name])
             else
                 Pkg.develop(; url="https://github.com/QEDjl-project/$(dep.name).jl")
@@ -142,7 +144,19 @@ function set_compat_helper(
     return close(f)
 end
 
+function get_custom_urls_from_env_variables()::AbstractDict{String,String}
+    custom_urls=Dict{String,String}()
+    for (var_name, var_value) in ENV
+        if startswith(var_name, "CI_DEV_DEV_URL_")
+            custom_urls[var_name[length("CI_DEV_DEV_URL_")+1:end]] = var_value
+        end
+    end
+    return custom_urls
+end
+
 if abspath(PROGRAM_FILE) == @__FILE__
+    custom_urls = get_custom_urls_from_env_variables()
+
     new_compat = Vector{Tuple{String,String}}()
     if haskey(ENV, "CI_DEPENDENCY_NAME") && haskey(ENV, "CI_DEPENDENCY_VERSION")
         push!(
@@ -152,5 +166,5 @@ if abspath(PROGRAM_FILE) == @__FILE__
     end
 
     deps = get_filtered_dependencies(r"^(QED*|QuantumElectrodynamics*)")
-    set_dev_dependencies(deps, [("QEDcore", "0.1.0")])
+    set_dev_dependencies(deps, new_compat, custom_urls)
 end
