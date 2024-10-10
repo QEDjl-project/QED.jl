@@ -296,11 +296,15 @@ if abspath(PROGRAM_FILE) == @__FILE__
         end
     end
 
+    println(my_pkg_ordering)
+
     for pkg in my_pkg_ordering
         if pkg == ENV["CI_DEPENDENCY_NAME"]
+            println(ENV["CI_DEPENDENCY_PATH"])
             Pkg.develop(;path=ENV["CI_DEPENDENCY_PATH"])
         else
             project_path=joinpath(qed_path, pkg)
+            println(project_path)
             for (compact_name, compact_version) in new_compat
                 set_compat_helper(compact_name, compact_version, project_path)
             end
