@@ -13,6 +13,7 @@ The script needs to be executed the project space, which should be modified.
 using Pkg
 using TOML
 using Logging
+using LibGit2
 
 # TODO(SimeonEhrig): is copied from integTestGen.jl
 """
@@ -61,15 +62,90 @@ dict key.
 """
 function get_filtered_dependencies(
     name_filter::Union{<:AbstractString,Regex}=r".*",
-    project_dependencies=Pkg.dependencies(),
-)::AbstractVector{Pkg.API.PackageInfo}
-    deps = Vector{Pkg.API.PackageInfo}(undef, 0)
-    for (uuid, dep) in project_dependencies
-        if _match_package_filter(name_filter, dep.name)
-            push!(deps, dep)
+    project_toml_path=Pkg.project().path,
+)::AbstractVector{String}
+    project_toml = TOML.parsefile(project_toml_path)
+    deps = Vector{String}(undef, 0)
+    if haskey(project_toml, "deps")
+        for dep_pkg in keys(project_toml["deps"])
+            if _match_package_filter(name_filter, dep_pkg)
+                push!(deps, dep_pkg)
+            end
         end
     end
     return deps
+end
+
+function build_qed_dev_dependency_graph(qed_path, custom_urls=Dict{String,String}(), package_name="QuantumElectrodynamics", origin=["QuantumElectrodynamics"]
+    )::AbstractDict
+    graph=Dict()
+    repository_path = joinpath(qed_path, package_name)
+    if !isdir(repository_path)
+        if haskey(custom_urls, package_name)
+            splitted_url = split(custom_urls[package_name], "#")
+            if length(splitted_url) < 2
+                LibGit2.clone(splitted_url[1], repository_path, branch="dev")
+            else
+                LibGit2.clone(splitted_url[1], repository_path, branch=splitted_url[2])
+            end
+        else
+            # could be optimized with clone depth=1, but no idea if LibGit2.jl support it
+            LibGit2.clone("https://github.com/QEDjl-project/$(package_name).jl", repository_path, branch="dev")
+        end
+    end
+    # implement graph building algorithm with `git clone`
+    project_toml = TOML.parsefile(joinpath(repository_path, "Project.toml"))
+    if haskey(project_toml, "deps")
+        for dep_pkg in keys(project_toml["deps"])
+            if dep_pkg in origin
+                dep_chain = ""
+                for dep in origin
+                    dep_chain *= dep * " -> "
+                end
+                throw(ErrorException("detect circular dependency in graph: $(dep_chain)$(dep_pkg)"))
+            end
+            if startswith(dep_pkg, "QED")
+                graph[dep_pkg] = build_qed_dev_dependency_graph(qed_path, custom_urls, dep_pkg, vcat(origin, [dep_pkg]))
+            end
+        end
+    end
+
+    if package_name=="QuantumElectrodynamics"
+        head_node = Dict()
+        head_node[package_name] = graph
+        return head_node
+    end
+    return graph
+end
+
+function search_leaf(graph, leaf_list)
+    for pkg in keys(graph)
+        if isempty(keys(graph[pkg]))
+            push!(leaf_list, pkg)
+            pop!(graph, pkg)
+        else
+            search_leaf(graph[pkg], leaf_list)
+        end
+    end
+end
+
+function get_package_dependecy_list(graph, stop_package="")
+    graph_copy = deepcopy(graph)
+    pkg_ordering = []
+    while true
+        if isempty(keys(graph_copy["QuantumElectrodynamics"]))
+            push!(pkg_ordering,Set{String}(["QuantumElectrodynamics"]))
+            return pkg_ordering
+        end
+        leafs = Set{String}()
+        search_leaf(graph_copy, leafs)
+        if stop_package in leafs
+            push!(pkg_ordering,Set{String}([stop_package]))
+            return pkg_ordering
+        end
+        push!(pkg_ordering, leafs) 
+    end
+    return pkg_ordering
 end
 
 """
@@ -108,6 +184,25 @@ function set_dev_dependencies(
         end
     end
 end
+
+function set_dev_dependencies(
+    dependencies::Set{String},
+    compact_names::AbstractVector{Tuple{String,String}}=Vector{Tuple{String,String}}(),
+    custom_urls::AbstractDict{String,String}=Dict{String,String}(),
+)
+    for dep in dependencies
+        if haskey(custom_urls, dep)
+            @warn "use custom url for package $(dep): $(custom_urls[dep])"
+            Pkg.develop(; url=custom_urls[dep.name])
+        else
+            Pkg.develop(; url="https://github.com/QEDjl-project/$(dep).jl")
+        end
+        for (compact_name, compact_version) in compact_names
+            set_compat_helper(compact_name, compact_version, dep.source)
+        end
+    end
+end
+
 
 """
     set_compat_helper(
@@ -154,7 +249,25 @@ function get_custom_urls_from_env_variables()::AbstractDict{String,String}
     return custom_urls
 end
 
+function print_tree(graph, level=0)
+    for key in keys(graph)
+        println(repeat(".", level)*key)
+        print_tree(graph[key], level+1)
+    end
+end
+
 if abspath(PROGRAM_FILE) == @__FILE__
+    for var in ("CI_DEPENDENCY_NAME", "CI_DEPENDENCY_PATH")
+        if !haskey(ENV, var)
+            @error "environemnt variable $(var) needs to be set"
+            exit(1)
+        end
+    end
+
+    qed_path=mktempdir(;cleanup=false)
+    #qed_path="/tmp/jl_1H5Kco"
+    println(qed_path)
+
     custom_urls = get_custom_urls_from_env_variables()
 
     new_compat = Vector{Tuple{String,String}}()
@@ -165,6 +278,38 @@ if abspath(PROGRAM_FILE) == @__FILE__
         )
     end
 
-    deps = get_filtered_dependencies(r"^(QED*|QuantumElectrodynamics*)")
-    set_dev_dependencies(deps, new_compat, custom_urls)
+    pkg_tree = build_qed_dev_dependency_graph(qed_path, custom_urls)
+    pkg_ordering = get_package_dependecy_list(pkg_tree)
+    for i in keys(pkg_ordering)
+        println("$(i): $(pkg_ordering[i])")
+    end
+
+    required_deps = get_filtered_dependencies(r"^(QED*|QuantumElectrodynamics*)")
+
+    my_pkg_ordering = []
+
+    for init_level in pkg_ordering
+        for required_dep in required_deps
+            if required_dep in init_level
+                push!(my_pkg_ordering, required_dep)
+            end
+        end
+    end
+
+    for pkg in my_pkg_ordering
+        if pkg == ENV["CI_DEPENDENCY_NAME"]
+            Pkg.develop(;path=ENV["CI_DEPENDENCY_PATH"])
+        else
+            project_path=joinpath(qed_path, pkg)
+            for (compact_name, compact_version) in new_compat
+                set_compat_helper(compact_name, compact_version, project_path)
+            end
+            Pkg.develop(;path=project_path)
+        end
+    end
+
+    exit()
+
+    #deps = get_filtered_dependencies(r"^(QED*|QuantumElectrodynamics*)")
+    #set_dev_dependencies(deps, new_compat, custom_urls)
 end
