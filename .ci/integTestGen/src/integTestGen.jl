@@ -188,6 +188,7 @@ function generate_job_yaml!(
             script, "julia --project=. /integration_test_tools/.ci/set_dev_dependencies.jl"
         )
     end
+    push!(script, "julia --project=. -e 'import Pkg; Pkg.instantiate()'")
     push!(script, "julia --project=. -e 'import Pkg; Pkg.test(; coverage = true)'")
 
     current_job_yaml = Dict(
@@ -196,6 +197,13 @@ function generate_job_yaml!(
         "tags" => ["cpuonly"],
         "script" => script,
     )
+
+    if haskey(ENV, "CI_DEPENDENCY_NAME") && haskey(ENV, "CI_DEPENDENCY_VERSION")
+        current_job_yaml["variables"] = Dict(
+            "CI_DEPENDENCY_NAME" => ENV["CI_DEPENDENCY_NAME"],
+            "CI_DEPENDENCY_VERSION" => ENV["CI_DEPENDENCY_VERSION"],
+        )
+    end
 
     if can_fail
         current_job_yaml["allow_failure"] = true
